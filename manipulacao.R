@@ -1,3 +1,5 @@
+# Aqui, temos os códigos para a manipulação dos dados e criação do dataframe dos dados utilizados no trabalho.
+
 # Importando os dados do trabalho
 
 # Pacotes necessários
