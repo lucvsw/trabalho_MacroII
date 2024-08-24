@@ -1,6 +1,6 @@
 # A Efetividade da Política Monetária no Brasil: Uma Investigação Empírica
 
-Esse é o repositório dos scripts utilizados na produção do trabalho "A Efetividade da Política Monetária no Brasil: Uma Investigação Empírica" para a disciplina de Macroeconomia II do Doutorado em Economia pela UCB.
+Este é o repositório dos scripts utilizados na produção do trabalho "A Efetividade da Política Monetária no Brasil: Uma Investigação Empírica" para a disciplina de Macroeconomia II do Doutorado em Economia pela UCB.
 
 **Autor**: Lucas Dutra de Paulo
 
