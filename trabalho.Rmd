@@ -1,0 +1,590 @@
+---
+title: 'A Efetividade da Política Monetária no Brasil: Uma Investigação Empírica'
+author: "Lucas Dutra"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+# Pacotes necessários
+pacotes <- c("dplyr", "httr", "readxl", "stargazer", "ggplot2", "gridExtra", "seasonal", "vars", "tseries")
+invisible(lapply(pacotes, function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
+}))
+```
+```{r, include = TRUE, results='hide'}
+url <- "https://raw.githubusercontent.com/lucvsw/trabalho_MacroII/main/dados_completo.xlsx"
+temp_file <- tempfile(fileext = ".xlsx")
+GET(url, write_disk(temp_file, overwrite = TRUE))
+
+# Dados
+dados_completo <- read_excel(temp_file)
+```
+
+
+## **Resumo**
+
+Este artigo estima um modelo vetorial autorregressivo restrito com variáveis exógenas (VARX) para examinar a eficácia do instrumento de política monetária no Brasil no período de 2003 a 2024. No Brasil, o principal instrumento de política monetária é a taxa básica de juros da economia (Selic). Os resultados mostram que, embora um choque positivo na taxa de juros de política monetária tenha um efeito direto na redução da atividade econômica, há um impacto modesto e limitado na redução da inflação e nenhum impacto sobre a taxa de câmbio real.
+
+## **Dados e resultados empíricos**
+
+Para investigar os efeitos de um choque contracionista na política monetária e seus efeitos sobre a atividade econômica, inflação e taxa de câmbio, são utilizados dados do Índice de Atividade Econômica do Banco Central (IBC-BR) como medida de atividade econômica obtido pelo Bacen; para medir a inflação é utilizada a variação mensal do Índice Nacional de Preços ao Consumidor-Amplo (IPCA) calculada pelo IBGE; o câmbio é medido pelo Índice da taxa de câmbio real efetiva obtido pelo Bacen;<sup>1</sup> a taxa de juros utilizada como instrumento de política monetária é a taxa de juros Selic acumulada no mês obtida pelo Bacen.<sup>2</sup> Para controlar pela influência de fatores externos na economia doméstica, são utilizados o preço médio à vista do barril de petróleo bruto, obtido pelo Banco Mundial, e a inflação dos Estados Unidos medida pelo <i>Consumer Price Index</i> (CPI), obtido pela OCDE.<sup>3</sup>
+
+Além das variáveis endógenas especificadas no parágrafo anterior, o modelo também utiliza variáveis estritamente exógenas. São utilizadas três variáveis dummies para os períodos da crise financeira de 2008, recessão de 2015/2016 e o período da crise de Covid-19 e um termo constante.<sup>4</sup>
+
+```{r}
+# Escolhendo as colunas para fazer a tabela descritiva
+filtered_data <- dados_completo %>%
+  dplyr::select(-ref.date)
+# Calcular estatísticas descritivas e armazenar em uma matriz
+descriptive_stats <- function(x) {
+  n <- length(x)
+  mean <- mean(x, na.rm = TRUE)
+  sd <- sd(x, na.rm = TRUE)
+  min <- min(x, na.rm = TRUE)
+  max <- max(x, na.rm = TRUE)
+  return(c("Observações" = n, "Média" = mean, "Desvio Padrão" = sd, "Mínimo" = min, "Máximo" = max))
+}
+
+# Aplicar a função a cada coluna do dataframe e transpor o resultado
+stats <- t(apply(filtered_data, 2, descriptive_stats))
+
+# Use stargazer para criar a tabela em formato Markdown
+stargazer(stats, type = "text", 
+          summary = FALSE, 
+          title = "Tabela 1 - Estatísticas Descritivas")
+```
+
+A Tabela (1) apresenta as estatísticas descritivas do número de observações, média, desvio padrão, mínimo e máximo. Os dados utilizados são mensais e temos um total de 254 observações.
+
+
+```{r, message=FALSE}
+# Calcular a matriz de correlação incondicional
+correlation_matrix <- function(filtered_data, 
+                               type = "pearson",
+                               digits = 3, 
+                               decimal.mark = ".",
+                               use = "all", 
+                               show_significance = TRUE, 
+                               replace_diagonal = FALSE, 
+                               replacement = ""){
+  
+  # check arguments
+  stopifnot({
+    is.numeric(digits)
+    digits >= 0
+    use %in% c("all", "upper", "lower")
+    is.logical(replace_diagonal)
+    is.logical(show_significance)
+    is.character(replacement)
+  })
+  
+  # we need the Hmisc package for this
+  require(Hmisc)
+  
+  # retain only numeric and boolean columns
+  isNumericOrBoolean = vapply(filtered_data, function(x) is.numeric(x) | is.logical(x), logical(1))
+  if (sum(!isNumericOrBoolean) > 0) {
+    cat('Dropping non-numeric/-boolean column(s):', paste(names(isNumericOrBoolean)[!isNumericOrBoolean], collapse = ', '), '\n\n')
+  }
+  filtered_data = filtered_data[ , isNumericOrBoolean]
+  
+  # transform input data frame to matrix
+  x <- as.matrix(filtered_data)
+  
+  # run correlation analysis using Hmisc package
+  correlation_matrix <- Hmisc::rcorr(x, type = type)
+  R <- correlation_matrix$r # Matrix of correlation coefficients
+  p <- correlation_matrix$P # Matrix of p-values 
+  
+  # transform correlations to specific character format
+  Rformatted = formatC(R, format = 'f', digits = digits, decimal.mark = decimal.mark)
+  
+  # if there are any negative numbers, we want to put a space before the positives to align all
+  if (sum(R < 0) > 0) {
+    Rformatted = ifelse(R > 0, paste0(' ', Rformatted), Rformatted)
+  }
+  
+  # add significance levels if desired
+  if (show_significance) {
+    # define notations for significance levels; spacing is important.
+    stars <- ifelse(is.na(p), "   ", ifelse(p < .001, "***", ifelse(p < .01, "** ", ifelse(p < .05, "*  ", "   "))))
+    Rformatted = paste0(Rformatted, stars)
+  }
+  
+  # build a new matrix that includes the formatted correlations and their significance stars
+  Rnew <- matrix(Rformatted, ncol = ncol(x))
+  rownames(Rnew) <- colnames(x)
+  colnames(Rnew) <- paste(colnames(x), "", sep =" ")
+  
+  # replace undesired values
+  if (use == 'upper') {
+    Rnew[lower.tri(Rnew, diag = replace_diagonal)] <- replacement
+  } else if (use == 'lower') {
+    Rnew[upper.tri(Rnew, diag = replace_diagonal)] <- replacement
+  } else if (replace_diagonal) {
+    diag(Rnew) <- replacement
+  }
+  
+  return(Rnew)
+}
+
+# Exibir a matriz de correlação com os símbolos de significância
+correlation_matrix(filtered_data)
+```
+
+A Tabela (2) apresenta a matriz de correlação incondicional, o nível de significância de cada correlação foi calculado com base nos p-valores associados a cada coeficiente de correlação. Os símbolos de significância são atribuídos com base no p-valor associado a cada correlação, portanto, os níveis de significância fornecem uma indicação da confiabilidade das correlações estimadas, indicando que a correlação observada não ocorreu por acaso.<sup>5</sup>
+
+Na Tabela (2) é observada uma forte correlação negativa entre a taxa Selic e o Índice de Atividade Econômica (IBC), com um coeficiente de -0.586, indicando que aumentos na Selic estão associados a quedas na atividade econômica, um resultado esperado dada a natureza contracionista das políticas monetárias. A relação entre a taxa Selic e o Índice Nacional de Preços ao Consumidor Amplo (IPCA) revela uma correlação positiva modesta de 0.075, indicando uma associação fraca entre as taxas de juros e a inflação, o que pode sugerir que os efeitos das mudanças na Selic sobre a inflação são mais complexos do que uma relação linear direta. Temos uma correlação fraca e estatisticamente insignificante entre a taxa Selic e a taxa de câmbio de 0.058, tradicionalmente, espera-se que uma política monetária restritiva, representada pelo aumento da taxa Selic, leve a uma valorização da moeda local devido ao aumento dos influxos de capital estrangeiro em busca de maiores retornos nos investimentos denominados na moeda nacional, essa correlação encontrada sugere que outros fatores podem estar exercendo influência sobre a taxa de câmbio, reduzindo a força da relação com a taxa Selic. 
+
+```{r plot-timeseries, fig.cap="Séries temporais de IBC, IPCA, Selic e Câmbio.", warning=FALSE}
+# Variáveis a serem dessazonalizadas:
+variaveis <- c("ipc_us", "Selic", "IBC", "IPCA", "cambio_real", "oil")
+
+# Loop para dessazonalizar cada variável e armazená-la em um objeto separado
+for (var in variaveis) {
+  # Converter a variável para uma série temporal
+  ts_data <- ts(dados_completo[[var]], start = c(2003, 1), frequency = 12)
+  
+  # Dessazonalizar a série temporal
+  dessazonalizada <- seas(ts_data, x11 = "")
+  
+  # Atribuir a série dessazonalizada a um objeto com um nome específico
+  assign(paste0("dessaz_", var), dessazonalizada)
+}
+
+dados_final <- dados_completo %>%
+  mutate(Selic_deseas = final(dessaz_Selic),
+         IBC_deseas = final(dessaz_IBC),
+         IPCA_deseas = final(dessaz_IPCA),
+         cambio_real_deseas = final(dessaz_cambio_real),
+         oil_deseas = final(dessaz_oil),
+         ipc_us_deseas = final(dessaz_ipc_us))
+
+# Convertendo a variável de data para o formato Date
+dados_temporal <- dados_final %>%
+  mutate(data = as.Date(ref.date))
+# Definir os limites do período de crise (datas de início e fim da crise)
+inicio_crise <- as.Date("2008-10-01") # Fonte CODACE
+fim_crise <- as.Date("2009-03-01")
+inicio_dilma <- as.Date("2014-04-01") # fonte CODACE
+fim_dilma <- as.Date("2017-01-01")
+inicio_covid <- as.Date("2020-03-01") # Fonte CODACE
+fim_covid <- as.Date("2020-07-01")
+
+# Vetor com os nomes das variáveis
+variaveis <- c("Selic", "IBC", "IPCA", "cambio_real", "oil", "ipc_us", "Selic_deseas", "IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "oil_deseas", "ipc_us_deseas")
+
+# Vetor de rótulos personalizados
+rotulos <- c(Selic = "Taxa Selic", 
+             IBC = "IBC-BR", 
+             IPCA = "IPCA",
+             cambio_real = "Câmbio", 
+             oil = "Petróleo", 
+             ipc_us = "CPI",
+             Selic_deseas = "Taxa Selic dessazonalizada", 
+             IBC_deseas = "IBC-BR dessazonalizada", 
+             IPCA_deseas = "IPCA dessazonalizado",
+             cambio_real_deseas = "Câmbio dessazonalizado", 
+             oil_deseas = "Petróleo dessazonalizado", 
+             ipc_us_deseas = "CPI dessazonalizado")
+
+# Loop para criar os gráficos
+for (var in variaveis) {
+  plot_obj <- ggplot(dados_temporal, aes(x = data, y = .data[[var]])) +
+    # Adicionar sombreamento para o período de crise
+    geom_rect(xmin = inicio_crise, xmax = fim_crise, ymin = -Inf, ymax = Inf, fill = "grey", alpha = .015) +
+    # Adicionar linha vertical para indicar o início da crise
+    geom_vline(xintercept = as.numeric(inicio_crise), linetype = "dotted", color = "red") +
+    # Adicionar linha vertical para indicar o fim da crise
+    geom_vline(xintercept = as.numeric(fim_crise), linetype = "dotted", color = "red") +
+    # Adicionar sombreamento para o período da Dilma
+    geom_rect(xmin = inicio_dilma, xmax = fim_dilma, ymin = -Inf, ymax = Inf, fill = "grey", alpha = .015) +
+    # Adicionar linha vertical para indicar o início da Dilma
+    geom_vline(xintercept = as.numeric(inicio_dilma), linetype = "dotted", color = "red") +
+    # Adicionar linha vertical para indicar o fim da Dilma
+    geom_vline(xintercept = as.numeric(fim_dilma), linetype = "dotted", color = "red") +
+    # Adicionar sombreamento para o período da covid
+    geom_rect(xmin = inicio_covid, xmax = fim_covid, ymin = -Inf, ymax = Inf, fill = "grey", alpha = .015) +
+    # Adicionar linha vertical para indicar o início da covid
+    geom_vline(xintercept = as.numeric(inicio_covid), linetype = "dotted", color = "red") +
+    # Adicionar linha vertical para indicar o fim da covid
+    geom_vline(xintercept = as.numeric(fim_covid), linetype = "dotted", color = "red") +
+    geom_line() + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(face = "bold"),
+          axis.text.y = element_text(face = "bold"),
+          panel.grid.major = element_line(linetype = "dashed"),
+          panel.grid.minor = element_line(linetype = "dashed")) +
+    labs(x = expression(bold("Anos")), y = rotulos[[var]]) +  # Aqui
+    theme(axis.line = element_line(color = "black", size = 0.5),
+          axis.line.x = element_line(),
+          axis.line.y = element_line()) +
+    scale_x_date(date_breaks = "1 year", date_labels = "%Y")
+  
+  assign(paste0(var, "_plot"), plot_obj)
+}
+
+# Printando um dos mapas que foram gerados no código acima, temos plots para todas as variáveis: originais e dessazonalizada.
+Selic_plot
+ 
+```
+
+A Figura (1) exibe as séries temporais do IBC, IPCA, Selic, câmbio, preço do barril de petróleo e inflação dos Estados Unidos abrangendo o período de janeiro de 2003 a fevereiro de 2024. Este intervalo foi selecionado com base no início da série temporal do IBC. À esquerda, temos as séries com os dados originais e, à direita, após a dessazonalização. Além disso, três períodos sombreados são destacados em todas as séries, representando a crise financeira de 2008, a recessão de 2016 e o período da Covid-19. O início e o fim de cada um desses períodos foram determinados pelo Comitê de Datação de Ciclos Econômicos (CODACE), o CODACE tem como finalidade estabelecer cronologias de referência para os ciclos econômicos brasileiros. 
+
+IBC apresenta uma tendência de crescimento até 2014, coincidindo com a tendência de redução da Selic. Após 2014, o IBC mostra períodos de estagnação e queda, que reflete o período de queda atividade econômica por conta da recessão que se inicia no início de 2014, voltando a apresentar algum crescimento após a crise de Covid-19 que se inicia em 2020. A Selic aumenta durante a recessão de 2014 e retorna à sua tendência de redução até 2021, quando se observa um aumento drástico. Este aumento drástico reflete uma tentativa de conter a inflação elevada e estabilizar a economia após os impactos negativos da Covid-19.
+
+O IPCA oscila sem uma tendência clara, mas apresenta picos significativos durante os períodos de crise. O Câmbio inicialmente diminui até 2008, depois apresenta uma tendência de alta após 2014, refletindo a instabilidade econômica. Após a diferenciação, as séries eliminam as tendências de longo prazo, destacando variações de curto prazo: o IBC mostra flutuações mais erráticas, o IPCA exibe oscilações regulares, a Selic evidencia variações pontuais e o Câmbio apresenta maior volatilidade. As séries diferenciadas revelam que a volatilidade aumenta nos períodos de crise, com padrões de curto prazo mais evidentes, facilitando a análise das flutuações imediatas e destacando a interdependência entre as variáveis.
+
+### **Metodologia e testes preliminares**
+
+O efeito da política de contração monetária por de um choque positivo na taxa de juros é investigado utilizando um modelo Vetorial Autorregressivo Restrito com Variáveis Exógenas (VAR). A forma estrutural do modelo VARX utilizado é escrita como:
+
+A equação a seguir descreve um modelo de vetor autorregressivo com variáveis endógenas e exógenas:
+
+\[
+y_{t} = A_{1}y_{t-1} + \cdots + A_{p}y_{t-p} + B_{0}x_{t} + \cdots + B_{q}x_{t-q} + C.D_{t} + \varepsilon_{t}
+\]
+
+onde \( y_{t} = [y_{1t}, \ldots, y_{Kt}]' \) é um vetor de \( K \) variáveis endógenas observadas (total e parcialmente interativas), \( x_{t} = [x_{1t}, \ldots, x_{Mt}]' \) é um vetor de \( M \) variáveis exógenas observadas, \( D_{t} \) contém todas as variáveis determinísticas, e \( \varepsilon_{t} = [\varepsilon_{1t}, \ldots, \varepsilon_{Kt}]' \) é um processo de ruído branco não observável de dimensão \( K \), com média zero e matriz de covariância definida positiva.
+
+Serão utilizados os dados dessazonalizados das variáveis na análise. A dessazonalização dos dados é essencial para remover efeitos sazonais que podem distorcer a interpretação dos resultados. As variações sazonais são flutuações periódicas que ocorrem regularmente devido a fatores como mudanças climáticas, feriados ou ciclos de produção, que podem mascarar a verdadeira relação entre as variáveis econômicas. Ao utilizar dados dessazonalizados, é possível focar nas tendências de longo prazo e nos choques não periódicos, proporcionando uma análise mais precisa e confiável das interações entre as variáveis no modelo.
+
+Primeiro, será calculado um modelo VAR sem restrições e sem a utilização de variáveis exógenas, depois, é estimado um modelo sem restrições e com variáveis. Por último, é estimado o modelo Vetorial Autorregressivo Restrito com variáveis Exógenas. O modelo VARX utilizado é composto por três blocos de variáveis. O primeiro bloco consiste em variáveis endógenas totalmente interativas, onde os parâmetros não estão sujeitos a restrições. O segundo bloco é composto por variáveis endógenas parcialmente interativas, onde os parâmetros estão sujeitos a restrições. Por fim, o terceiro bloco é formado por variáveis estritamente exógenas, que não são influenciadas pelas outras variáveis no modelo.
+
+Dentro da estrutura do VARX, são impostas restrições nas interações entre as variáveis com base em raciocínio econômico a priori. Isso permite considerar assimetrias entre as variáveis, o que, por sua vez, reduz o número de parâmetros a serem estimados, aumentando assim a eficiência da estimação. Essas restrições permitem uma melhor interpretação dos resultados, uma vez que são fundamentadas em um raciocínio econômico a priori. Isso ajuda a evitar estimativas implausíveis ou incoerentes, além de contribuir para a identificação de relações causais mais precisas entre as variáveis do modelo. Ademais, ao incorporar conhecimentos prévios sobre o comportamento das variáveis econômicas, as restrições ajudam a evitar problemas de multicolinearidade e sobre-ajuste, promovendo assim uma modelagem mais robusta e confiável. 
+
+Na escolha do número de defasagens (lags) para o modelo VAR, foram utilizados os critérios de seleção AIC, HQ, SC (BIC) e FPE, com um limite máximo de 13 defasagens, dado o caráter mensal dos dados.<sup>6</sup> A análise levou em consideração o tamanho do modelo e a quantidade de dados disponíveis, totalizando 254 observações. O modelo possui 6 variáveis endógenas e, no bloco exógeno, há uma constante e três variáveis dummies dos períodos de crise, dada a complexidade do modelo,  é crucial a seleção cuidadosa das defasagens para evitar a perda excessiva de graus de liberdade e a obtenção de estimativas confiáveis. A escolha final do número de defasagens balanceou a necessidade de capturar a dinâmica temporal das séries, a preservação de uma quantidade suficiente de dados para garantir a robustez das estimativas dos parâmetros e a eliminação de autocorrelação serial nos resíduos.
+
+```{r}
+# Use VARselect para escolher o atraso ótimo
+lag_selection <- VARselect(dados_final[, c("Selic_deseas", "IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "oil_deseas", "ipc_us_deseas")], lag.max = 24, type = "none")
+
+# Exiba os resultados
+print(lag_selection)
+```
+Acima, temos os resultados dos critérios de seleção de defasagens. Esses resultados se mantém ao utilizar um número máximo maior de defasagens para testagem. Os critérios AIC e FPE retornam o mesmo número de defasagens ótimas. Os critérios HQ e SC sugerem 2 e 1 defasagens, respectivamente, como ótimos. No entanto, esses números são provavelmente insuficientes para capturar a dinâmica do modelo.  Por esse motivo, serão utilizadas as 3 defasagens sugeridas como ótimas pelos critérios AIC e FPE.
+
+### **Modelo sem restrições**
+
+Começamos analisando os efeitos de um choque de política monetária contracionista, ou seja, um choque positivo na variável Selic no modelo de VAR sem restrições. As figuras dos primeiros códigos apresentam as funções de impulso-resposta com a ausência de variáveis exógenas, as figuras seguintes as funções de impulso-resposta com a inclusão de variáveis exógenas. As variáveis exógenas utilizadas são: um termo constante e 3 variáveis dummies para os períodos da crise financeira de 2008, recessão de 2015/2016 e o período da crise de Covid-19.
+
+```{r, results='hide'}
+## Modelo sem restrições e sem variáveis exógenas
+modelo_var_1 <- VAR(dados_final[, c("IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "Selic_deseas", "oil_deseas", "ipc_us_deseas")], 
+                  p = 3, 
+                  type = "none",
+                  season = NULL)
+# Visualizando o sumário do modelo
+summary(modelo_var_1)
+```
+
+```{r}
+# Calcular a função de resposta ao impulso - IBC (IRF)
+irf_IBC_1 <- irf(modelo_var_1, impulse = "Selic_deseas", response = c("IBC_deseas"), n.ahead = 60, cumulative = FALSE, boot = TRUE, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_output_growth <- plot(irf_IBC_1, main = "",
+                 xlab = NULL, 
+                 ylab = "Efeito no IBC")
+
+# Calcular a função de resposta ao impulso - inflação (IRF)
+irf_IPCA_1 <- irf(modelo_var_1, impulse = "Selic_deseas", response = c("IPCA_deseas"), n.ahead = 60, cumulative = FALSE, ci = 0.95, runs = 1000)
+# Plotar a função de resposta ao impulso (IRF)
+plot_ipca_var_mensal <- plot(irf_IPCA_1, main = "",
+                           xlab = NULL, 
+                           ylab = "Efeito na Inflação")
+
+# Calcular a função de resposta ao impulso - câmbio (IRF)
+irf_cambio_1 <- irf(modelo_var_1, impulse = "Selic_deseas", response = c("cambio_real_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_cambio_efetivo <- plot(irf_cambio_1, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito no Câmbio")
+
+# Calcular a função de resposta ao impulso - Selic (IRF)
+irf_selic_1 <- irf(modelo_var_1, impulse = "Selic_deseas", response = c("Selic_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_selic <- plot(irf_selic_1, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito na Selic")
+```
+```{r, results='hide'}
+## Modelo sem restrições e com variáveis exógenas
+# Dummies de crise
+dados_dummy <- dados_final %>%
+  mutate(data = as.Date(ref.date)) %>%
+  mutate(crise_2008 = ifelse(data >= as.Date("2008-10-01") & data <= as.Date("2009-03-01"), 1, 0),
+         crise_dilma = ifelse(data >= as.Date("2014-04-01") & data <= as.Date("2017-01-01"), 1, 0),
+         crise_covid = ifelse(data >= as.Date("2020-03-01") & data <= as.Date("2020-07-01"), 1, 0))
+# Definir as variáveis exógenas como um dataframe
+variaveis_exogenas <- dados_dummy[, c("crise_2008", "crise_dilma", "crise_covid")]
+
+modelo_var_2 <- VAR(dados_dummy[, c("IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "Selic_deseas", "oil_deseas", "ipc_us_deseas")], 
+                  p = 3, 
+                  type = "const",
+                  exogen = variaveis_exogenas,
+                  season = NULL)
+# Visualizando o sumário do modelo
+summary(modelo_var_2)
+```
+
+```{r}
+# Calcular a função de resposta ao impulso - IBC (IRF)
+irf_IBC_2 <- irf(modelo_var_2, impulse = "Selic_deseas", response = c("IBC_deseas"), n.ahead = 60, cumulative = FALSE, boot = TRUE, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_output_growth <- plot(irf_IBC_2, main = "",
+                 xlab = NULL, 
+                 ylab = "Efeito no IBC")
+
+# Calcular a função de resposta ao impulso - inflação (IRF)
+irf_IPCA_2 <- irf(modelo_var_2, impulse = "Selic_deseas", response = c("IPCA_deseas"), n.ahead = 60, cumulative = FALSE, ci = 0.95, runs = 1000)
+# Plotar a função de resposta ao impulso (IRF)
+plot_ipca_var_mensal <- plot(irf_IPCA_2, main = "",
+                           xlab = NULL, 
+                           ylab = "Efeito na Inflação")
+
+# Calcular a função de resposta ao impulso - câmbio (IRF)
+irf_cambio_2 <- irf(modelo_var_2, impulse = "Selic_deseas", response = c("cambio_real_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_cambio_efetivo <- plot(irf_cambio_2, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito no Câmbio")
+
+# Calcular a função de resposta ao impulso - Selic (IRF)
+irf_selic_2 <- irf(modelo_var_2, impulse = "Selic_deseas", response = c("Selic_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_selic <- plot(irf_selic_2, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito na Selic")
+```
+
+Os resultados empíricos das Figuras acima de um política monetária contracionista são: (1) uma redução inicial na atividade econômica, diferentemente de quando adicionamos variáveis, sem variáveis exógenas, observamos que a resposta média não retorna a zero, no entanto, a faixa de significância volta a tocar no zero, sugerindo que o efeito se dissipa e não é estatisticamente significativo no longo prazo, isto é, nos dois casos, o efeito é transitório; (2) há um leve efeito redutivo na inflação por volta do oitavo período nas figuras com variáveis exógenas, enquanto que, nas figuras sem variáveis exógenas, não vemos um impacto sobre a inflação; (3) não um efeito estatisticamente significante sobre o câmbio; (4) o efeito do choque na taxa de juros é dissipado, indicando que o choque é transitório e o sistema volta ao equilíbrio de longo prazo. Vemos então que um choque na taxa de juros causa uma redução inicial na atividade econômica, como esperado, mas tem um efeito praticamente nulo no controle inflacionário e não tem efeito sobre a taxa de câmbio. A inclusão de variáveis exógenas leva a uma estabilização mais rápida e traz uma significância estatística na resposta da inflação ao choque no juros, ainda que seja um efeito quase desprezível.
+
+### **Modelo com restrições**
+
+O modelo VAR utilizado é restrito de acordo com a seguinte matriz:
+
+\[
+\begin{bmatrix}
+\alpha_{1,1} & \alpha_{1,2} & \alpha_{1,3} & \alpha_{1,4} & \alpha_{1,5} & \alpha_{1,6}  \\
+\alpha_{2,1} & \alpha_{2,2} & \alpha_{2,3} & \alpha_{2,4} & \alpha_{2,5} & \alpha_{2,6}  \\
+\alpha_{3,1} & \alpha_{3,2} & \alpha_{3,3} & \alpha_{3,4} & 0 & \alpha_{3,6}  \\
+\alpha_{4,1} & \alpha_{4,2} & 0 & \alpha_{4,4} & 0 & 0  \\
+0 & 0 & 0 & 0 & \alpha_{5,5} & \alpha_{5,6}  \\
+0 & 0 & 0 & 0 & 0 & \alpha_{6,6}  \\
+\end{bmatrix}
+\begin{bmatrix}
+IBC_{t-p} \\
+inflacao_{t-p} \\
+cambio_{t-p} \\
+Selic_{t-p} \\
+CPI_{t-p} \\
+petroleo_{t-p} 
+\end{bmatrix}
+\]
+
+onde \(\alpha_{ij}\) (\(ij = 1, 2, ...\)) são os coeficientes no vetor de variáveis endógenas e \(p = 1, ...\) neste modelo (defasagens).
+
+
+No modelo VAR restrito descrito, a matriz de coeficientes indica as interações entre as variáveis endógenas com suas respectivas defasagens. O IBC e a inflação são influenciados por todas as variáveis do modelo, refletindo a sensibilidade da economia brasileira a fatores internos e externos. A taxa de câmbio depende de todas as variáveis exceto o CPI, pois a inflação externa não afeta diretamente a taxa de câmbio brasileira. A taxa de política monetária é influenciada pela atividade econômica, inflação e seu próprio valor passado, mas não pelo CPI e pelo preço do petróleo, indicando que a política monetária é determinada pelo nível de atividade econômica, inflação e pelos valores passados da Selic. O CPI é influenciado apenas por suas próprias defasagens e pelos preços do petróleo, representando a inflação externa e os custos globais de energia. Finalmente, o preço do petróleo é completamente exógeno no modelo, dependendo exclusivamente de suas próprias defasagens, o que reflete a determinação dos preços do petróleo por fatores globais de oferta e demanda, independentemente das condições econômicas internas do Brasil.
+
+```{r, results='hide'}
+## Modelo com restrições e com variáveis exógenas
+# Criando a matriz A de restrições
+A <- matrix(c(
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,       1,  1, 1, 1,    
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,       1,  1, 1, 1,    
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,       1,  1, 1, 1,   
+  1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0,       1,  1, 1, 1,    
+  0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0,       1,  1, 1, 0,    
+  0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1,       1,  1, 1, 0
+), nrow = 6, ncol=22, byrow = TRUE) # As duas últimas colunas indicam, primeiro, a existência de uma constante, e, a última, indica a existência de tendência na variável. As colunas anteriores indicam as restrições de interações de cada variável dependente.
+
+modelo_var_3 <- VAR(dados_dummy[, c("IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "Selic_deseas", "oil_deseas", "ipc_us_deseas")], 
+                  p = 3, 
+                  type = "const",
+                  exogen = variaveis_exogenas,
+                  season = NULL)
+modelo_var_3 <- restrict(modelo_var_3, method = "man", resmat = A)
+# Visualizando o sumário do modelo
+summary(modelo_var_3)
+```
+```{r}
+# Calcular a função de resposta ao impulso - IBC (IRF)
+irf_IBC_3 <- irf(modelo_var_3, impulse = "Selic_deseas", response = c("IBC_deseas"), n.ahead = 60, cumulative = FALSE, boot = TRUE, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_output_growth <- plot(irf_IBC_3, main = "",
+                 xlab = NULL, 
+                 ylab = "Efeito no IBC")
+
+# Calcular a função de resposta ao impulso - inflação (IRF)
+irf_IPCA_3 <- irf(modelo_var_3, impulse = "Selic_deseas", response = c("IPCA_deseas"), n.ahead = 60, cumulative = FALSE, ci = 0.95, runs = 1000)
+# Plotar a função de resposta ao impulso (IRF)
+plot_ipca_var_mensal <- plot(irf_IPCA_3, main = "",
+                           xlab = NULL, 
+                           ylab = "Efeito na Inflação")
+
+# Calcular a função de resposta ao impulso - câmbio (IRF)
+irf_cambio_3 <- irf(modelo_var_3, impulse = "Selic_deseas", response = c("cambio_real_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_cambio_efetivo <- plot(irf_cambio_3, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito no Câmbio")
+
+# Calcular a função de resposta ao impulso - Selic (IRF)
+irf_selic_3 <- irf(modelo_var_3, impulse = "Selic_deseas", response = c("Selic_deseas"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_selic <- plot(irf_selic_3, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito na Selic")
+```
+
+As figuras acima apresenta os resultados empíricos das funções de impulso-resposta com a inclusão de restrições e com variáveis exógenas. Os resultados expostos  são similares aos encontradas anteriormente, quando não havia restrições. Portanto, uma contração monetária inesperada leva a: (I) uma queda subsequente na atividade econômica; (II) uma diminuição tardia e suave na inflação; e (III) um efeito nulo sobre a taxa de câmbio real. Enquanto se observa uma relação mais direta entre o choque na política monetária e a atividade econômica, o resultado inesperado entre taxa de juros da política monetária e inflação pode ocorrer por conta de uma relação menos direta entre esses parâmetros, resultando em um impacto reduzido do choque de juros na inflação. Essa relação indireta pode ocorrer por meio da redução da atividade econômica causada pela política monetária contracionista e não é capturada pelo choque inesperado na taxa de juros.
+
+### **Teste de Robustez com Dados em Primeira Diferença**
+
+Para verificar a robustez dos resultados obtidos, realizaremos um teste adicional utilizando um modelo VAR com dados em primeira diferença. Este modelo em primeira diferença captura a variação das variáveis de um período para o outro, removendo tendências de longo prazo e focando nas flutuações de curto prazo. A resposta das funções de impulso será diferente neste caso, pois estaremos observando a dinâmica das mudanças nas variáveis em vez dos níveis absolutos. No entanto, o objetivo é verificar se as funções de impulso-resposta mantêm o mesmo sinal e direção em resposta a um choque positivo na taxa de juros Selic. Se os resultados forem consistentes, isso reforça a validade dos achados anteriores, sugerindo que a dinâmica entre política monetária e as variáveis endógenas é robusta às diferentes especificações do modelo.
+
+```{r}
+# Tirando a primeira diferença
+variaveis_dessazonalizadas <- c("IBC_deseas", "IPCA_deseas", "cambio_real_deseas", "Selic_deseas", "oil_deseas", "ipc_us_deseas")
+
+# Loop para calcular a primeira diferença de cada variável
+for (var in variaveis_dessazonalizadas) {
+  # Adicionar a primeira diferença ao dataframe original
+  dados_final[[paste0(var, "_diff")]] <- c(NA, diff(dados_final[[var]]))
+}
+
+# Nomes das colunas de interesse das variáveis
+nomes_variaveis <- c("IBC", "IPCA", "Câmbio", "Selic", "Petróleo", "IPC")
+
+# Loop para realizar o teste ADF em cada coluna
+for (i in 8:13) {
+  # Extrair a coluna e converter para vetor
+  vetor <- unlist(dados_final[, i])
+  
+  # Remover valores NA
+  vetor <- na.omit(vetor)
+  
+  # Verificar se o vetor tem elementos suficientes para o teste
+  if (length(vetor) > 1) {
+    # Realizar o teste ADF
+    resultado_adf <- adf.test(vetor)
+    
+    # Imprimir o nome da variável e o resultado do teste
+    cat("Teste ADF para", nomes_variaveis[i-7], ":\n")
+    print(resultado_adf)
+    cat("\n")
+  } else {
+    cat("Não há dados suficientes para realizar o teste ADF para", nomes_variaveis[i-7], "\n\n")
+  }
+}
+
+# Nomes das colunas de interesse em primeira diferença
+nomes_variaveis <- c("IBC", "IPCA", "Câmbio", "Selic", "Petróleo", "IPC")
+
+# Loop para realizar o teste ADF em cada coluna
+for (i in 14:19) {
+  # Extrair a coluna e converter para vetor
+  vetor <- unlist(dados_final[, i])
+  
+  # Remover valores NA
+  vetor <- na.omit(vetor)
+  
+  # Verificar se o vetor tem elementos suficientes para o teste
+  if (length(vetor) > 1) {
+    # Realizar o teste ADF
+    resultado_adf <- adf.test(vetor)
+    
+    # Imprimir o nome da variável e o resultado do teste
+    cat("Teste ADF em primeira diferença para", nomes_variaveis[i-13], ":\n")
+    print(resultado_adf)
+    cat("\n")
+  } else {
+    cat("Não há dados suficientes para realizar o teste ADF para", nomes_variaveis[i-13], "\n\n")
+  }
+}
+
+```
+
+Os resultados avaliam a presença de raízes unitárias nos dados usando o teste de Dickey-Fuller Aumentado (ADF).
+
+```{r}
+# Dummies de crise
+dados_dummy_2 <- dados_final %>%
+  mutate(data = as.Date(ref.date)) %>%
+  mutate(crise_2008 = ifelse(data >= as.Date("2008-10-01") & data <= as.Date("2009-03-01"), 1, 0),
+         crise_dilma = ifelse(data >= as.Date("2014-04-01") & data <= as.Date("2017-01-01"), 1, 0),
+         crise_covid = ifelse(data >= as.Date("2020-03-01") & data <= as.Date("2020-07-01"), 1, 0))
+# Excluindo linhas com NA por conta da primeira diferença
+dados_diff <- na.omit(dados_dummy_2)
+# Definir as variáveis exógenas como um dataframe
+variaveis_exogenas_2 <- dados_diff[, c("crise_2008", "crise_dilma", "crise_covid")]
+modelo_var_4 <- VAR(dados_diff[, c("IBC_deseas_diff", "IPCA_deseas_diff", "cambio_real_deseas_diff", "Selic_deseas_diff", "oil_deseas_diff", "ipc_us_deseas_diff")], 
+                  p = 3, 
+                  type = "const",
+                  exogen = variaveis_exogenas_2,
+                  season = NULL)
+modelo_var_4 <- restrict(modelo_var_4, method = "man", resmat = A)
+# Visualizando o sumário do modelo
+summary(modelo_var_4)
+```
+```{r}
+# Calcular a função de resposta ao impulso - IBC (IRF)
+irf_IBC_4 <- irf(modelo_var_4, impulse = "Selic_deseas_diff", response = c("IBC_deseas_diff"), n.ahead = 60, cumulative = FALSE, boot = TRUE, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_output_growth <- plot(irf_IBC_4, main = "",
+                 xlab = NULL, 
+                 ylab = "Efeito no IBC")
+
+# Calcular a função de resposta ao impulso - inflação (IRF)
+irf_IPCA_4 <- irf(modelo_var_4, impulse = "Selic_deseas_diff", response = c("IPCA_deseas_diff"), n.ahead = 60, cumulative = FALSE, ci = 0.95, runs = 1000)
+# Plotar a função de resposta ao impulso (IRF)
+plot_ipca_var_mensal <- plot(irf_IPCA_4, main = "",
+                           xlab = NULL, 
+                           ylab = "Efeito na Inflação")
+
+# Calcular a função de resposta ao impulso - câmbio (IRF)
+irf_cambio_4 <- irf(modelo_var_4, impulse = "Selic_deseas_diff", response = c("cambio_real_deseas_diff"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_cambio_efetivo <- plot(irf_cambio_4, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito no Câmbio")
+
+# Calcular a função de resposta ao impulso - Selic (IRF)
+irf_selic_4 <- irf(modelo_var_4, impulse = "Selic_deseas_diff", response = c("Selic_deseas_diff"), n.ahead = 60, runs = 1000, ci = 0.95)
+# Plotar a função de resposta ao impulso (IRF)
+plot_selic <- plot(irf_selic_4, main = "",
+                            xlab = NULL, 
+                            ylab = "Efeito na Selic")
+```
+
+As últimas figuras apresentam as funções de impulso resposta a choque positivo na taxa de juros com dados em primeira diferença. A análise das funções de impulso-resposta obtidas a partir do modelo VAR com dados em primeira diferença confirma a robustez dos resultados anteriormente observados. Em resposta a um choque positivo na taxa de juros Selic, a atividade econômica apresenta uma redução significativa, evidenciando a sensibilidade da economia brasileira às políticas de contração monetária. A inflação, por outro lado, mostra um efeito muito pequeno e quase desprezível, sugerindo que a relação entre a taxa de juros e os níveis de inflação é menos direta e significativa. Além disso, não se observa qualquer efeito sobre a taxa de câmbio, corroborando a ideia de que as variações na política monetária não impactam diretamente a taxa de câmbio real. Esses resultados consistentes reforçam a validade das conclusões iniciais, destacando a robustez das interações entre política monetária e as variáveis endógenas no modelo VAR mesmo quando consideramos as flutuações de curto prazo.
+
+## **Conclusão**
+
+O objetivo deste estudo foi investigar a eficácia da ferramenta de política monetária no Brasil. A taxa de juros básica da economia brasileira, Selic, foi utilizada como instrumento de política. Para fazer essa análise, o estudo estimou um modelo vetorial autorregressivo restrito com variáveis exógenas (VARX).
+
+Em geral, nos resultados com o modelo VARX, onde há restrições e a inclusão de variáveis exógenas, observa-se que um aumento inesperado na taxa de juros da política monetária: (I) tem um impacto contracionista na atividade econômica; (II) leva a uma queda tardia e suave na inflação; e (III) não tem impacto sobre a taxa de câmbio real.
+
+Dessa forma, este estudo contribui para a literatura ao fornecer uma análise detalhada sobre a eficácia da política monetária no Brasil, especificamente usando a taxa básica de juros, a Selic, como instrumento. Ao estimar um modelo VARX com restrições e variáveis exógenas, os resultados revelam que um aumento inesperado na taxa de juros da política monetária tem efeitos contracionistas na atividade econômica, mas apenas um impacto modesto na redução da inflação e nenhum impacto significativo na taxa de câmbio real. De uma perspectiva de política, esses achados da análise das funções de impulso-resposta a um choque positivo na taxa de juros sugerem que, embora a política monetária possa influenciar a atividade econômica, não é encontrado um impacto direto tão significativo na redução da inflação, isto é, encontra-se um impacto direto quase desprezível no controle inflacionário, e não encontramos nenhum impacto sobre a taxa de câmbio real.
+
+<small>
+<sup>1</sup> O cálculo da taxa de câmbio real é feito em relação a um conjunto de países e moedas (uma cesta de países e moedas), em geral escolhidos conforme sua importância no comércio exterior, em vez de realizar o cálculo restrito a uma única relação bilateral.
+
+<sup>2</sup> A taxa Selic representa a taxa de juros média calculada no Sistema Especial de Liquidação e Custódia (Selic), aplicada sobre operações de financiamento de um dia útil, garantidas por títulos públicos registrados no Sistema. Esta taxa é o principal instrumento de política monetária utilizado pelo Comitê de Política Monetária (Copom), com o objetivo de alcançar a meta de inflação. O Copom determina a meta para a taxa Selic, e a mesa de operações do mercado aberto do Banco Central do Brasil (BCB) tem a responsabilidade de manter a taxa Selic diária próxima dessa meta.
+
+<sup>3</sup> Fatores externos, como os preços do petróleo e a inflação em outros países, podem afetar a economia doméstica de maneiras independentes das decisões de política monetária tomadas internamente.
+
+<sup>4</sup> Os períodos das crises foram definidos de acordo com o Comitê de Datação de Ciclos Econômicos (CODACE). A crise financeira de 2008 teve início em outubro de 2008 e término em março de 2009. A recessão de 2015/2016 começou em abril de 2014 e terminou em janeiro de 2017. O período da crise de Covid-19 iniciou em março de 2020 e terminou em julho de 2020. 
+
+<sup>5</sup> Os valores-p associados aos coeficientes de correlação na matriz de correlação foram obtidos usando o método de correlação de Pearson. Este método calcula o coeficiente de correlação linear entre dois conjuntos de dados, medindo a força e a direção da associação linear entre duas variáveis contínuas. Para cada par de variáveis, é calculado um t-valor estatístico com base no coeficiente de correlação e no tamanho da amostra. Este t-valor é então usado para calcular o p-valor, que indica a probabilidade de obter um coeficiente de correlação igual ou maior em magnitude, assumindo que a hipótese nula (de que não há correlação) é verdadeira.
+
+<sup>6</sup> O AIC (Critério de Informação de Akaike) é baseado na minimização do erro de predição e na complexidade do modelo. O HQ (Critério de Hannan-Quinn) é similar ao AIC, mas penaliza mais fortemente modelos com um grande número de parâmetros, evitando a superestimação do número de defasagens. O critério SC (BIC) também penaliza modelos mais complexos, com uma penalização mais forte que o HQ, considerando o tamanho da amostra. O FPE (Erro de Previsão Final) é uma medida da qualidade da previsão do modelo.
+</small>
